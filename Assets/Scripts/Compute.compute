@@ -1,0 +1,107 @@
+#pragma kernel Lenia
+#pragma kernel Circle
+#pragma kernel Empty
+#pragma kernel DrawKernel
+
+RWTexture2D<float4> PreviousValues;
+RWTexture2D<float4> Values;
+RWTexture2D<float4> Result;
+RWTexture2D<float4> Kernel;
+float2 MousePosition;
+
+int KernelSize;
+int Radius;
+
+#define CONV1_MU 0.5
+#define CONV1_SIGMA 0.05
+#define CONV2_MU 0.8
+#define CONV2_SIGMA 0.05
+#define GROWTH_MU 0.21
+#define GROWTH_SIGMA 0.0227
+
+float hash12(float2 p)
+{
+    float3 p3  = frac(float3(p.xyx) * .1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return frac((p3.x + p3.y) * p3.z);
+}
+
+float conv(float x, float mu, float sigma, float multiplier = 1)
+{
+    return exp(-pow((x - mu) / (2 * sigma), 2)) * multiplier;
+}
+
+float kernelWeight(float value)
+{
+    return max(conv(value, CONV1_MU, CONV1_SIGMA), conv(value, CONV2_MU, CONV2_SIGMA));
+}
+
+float growth(float x)
+{
+    return exp(-pow((x - GROWTH_MU) / (2 * GROWTH_SIGMA), 2)) * 2 - 1;
+}
+
+float normalizedDistance(int2 pos1, int2 pos2, float maxDistance)
+{
+    return 1.0 - saturate(distance(pos1, pos2) / maxDistance);
+}
+
+[numthreads(32,32,1)]
+void Lenia (int3 id : SV_DispatchThreadID)
+{
+    float totalWeight = 0.0;
+    float total = 0.0;
+
+    const int kernelRadius = KernelSize * 0.5;
+    
+    for (int y = -kernelRadius; y <= kernelRadius; y++)
+    {
+        for (int x = -kernelRadius; x <= kernelRadius; x++)
+        {
+            int2 offset = id.xy + int2(x, y);
+            float value = normalizedDistance(id.xy, offset, kernelRadius);
+            float cellValue = PreviousValues[offset].r;
+            float weight = kernelWeight(value);
+            
+            totalWeight += weight;
+            total += cellValue * weight;
+        }
+    }
+
+    total /= totalWeight;
+
+    float previousValue = PreviousValues[id.xy].r;
+    previousValue += growth(total) * 0.5;
+    previousValue = clamp(previousValue, 0.0, 1.0);
+    Values[id.xy] = float4(previousValue, clamp(previousValue, 0.0, 1.0), clamp(total, 0.0, 1.0), 1.0);
+
+    Result[id.xy] = Values[id.xy];  
+}
+
+[numthreads(32,32,1)]
+void Circle (int3 id : SV_DispatchThreadID)
+{
+    if (distance(MousePosition, id.xy) < Radius)
+    {
+        float value = hash12(id.xy + MousePosition);
+        Values[id.xy] = float4(value, 0, 0, 1);
+    }
+}
+
+[numthreads(32,32,1)]
+void DrawKernel (int3 id : SV_DispatchThreadID)
+{
+    const int kernelRadius = KernelSize * 0.5;
+    float v = normalizedDistance(id.xy, int2(kernelRadius, kernelRadius), kernelRadius);
+    float weight = kernelWeight(v);
+    Kernel[id.xy] = float4(weight.rrr, 1);
+}
+
+[numthreads(32,32,1)]
+void Empty (int3 id : SV_DispatchThreadID)
+{
+    if (distance(MousePosition, id.xy) < Radius)
+    {
+        Values[id.xy] = float4(0, 0, 0, 1);
+    }
+}
